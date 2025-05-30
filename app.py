@@ -1,14 +1,12 @@
 import streamlit as st
 import feedparser
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import re
-import pytz
 
 # --- CONFIG ---
 
 RSS_FEEDS = {
-    # Nuclear & Tariffs (existing)
     "Google News - Nuclear Energy": "https://news.google.com/rss/search?q=nuclear+energy",
     "Google News - Tariffs": "https://news.google.com/rss/search?q=tariffs",
     "Google News - Politics": "https://news.google.com/rss/search?q=politics",
@@ -32,7 +30,6 @@ RSS_FEEDS = {
     "Bloomberg Markets": "https://www.bloomberg.com/feeds/podcast/markets.xml",
     "Bloomberg Politics": "https://www.bloomberg.com/feeds/podcast/politics.xml",
     "CNBC Top News": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
-    "CNBC Markets": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
     "CNBC Politics": "https://www.cnbc.com/id/10000113/device/rss/rss.html",
     "MarketWatch Top Stories": "https://www.marketwatch.com/rss/topstories",
     "MarketWatch Markets": "https://www.marketwatch.com/rss/markets",
@@ -67,29 +64,30 @@ KEYWORD_GROUPS = {
     "Trade Agreement": ["trade agreement"]
 }
 
-# --- TIME ZONE CONFIG ---
-cet = pytz.timezone("CET")
-
-# --- HELPER FUNCTIONS ---
-
 def matches_keyword_group(text, keywords):
     text = text.lower()
     return all(re.search(r'\b{}\b'.format(re.escape(kw.lower())), text) for kw in keywords)
 
 def parse_date(date_str):
-    for fmt in ['%a, %d %b %Y %H:%M:%S %Z', '%a, %d %b %Y %H:%M:%S %z', '%Y-%m-%dT%H:%M:%S%z', '%Y-%m-%dT%H:%M:%S.%f%z']:
+    formats = [
+        '%a, %d %b %Y %H:%M:%S %Z',
+        '%a, %d %b %Y %H:%M:%S %z',
+        '%Y-%m-%dT%H:%M:%S%z',
+        '%Y-%m-%dT%H:%M:%S.%f%z',
+    ]
+    for fmt in formats:
         try:
-            return datetime.strptime(date_str, fmt)
+            return datetime.strptime(date_str, fmt).astimezone(timezone.utc)
         except Exception:
             continue
     try:
-        return datetime.fromisoformat(date_str)
+        return datetime.fromisoformat(date_str).astimezone(timezone.utc)
     except Exception:
-        return datetime.min
+        return datetime.min.replace(tzinfo=timezone.utc)
 
 def fetch_articles():
     articles = []
-    now = datetime.now(cet)
+    now = datetime.now(timezone.utc)
     day_ago = now - timedelta(days=1)
 
     for source, url in RSS_FEEDS.items():
@@ -103,14 +101,9 @@ def fetch_articles():
             link = entry.link
             published = entry.get("published", None)
             if not published:
-                continue
+                published = now.isoformat()
 
             published_dt = parse_date(published)
-            if published_dt.tzinfo is None:
-                published_dt = cet.localize(published_dt)
-            else:
-                published_dt = published_dt.astimezone(cet)
-
             if published_dt < day_ago:
                 continue
 
@@ -135,21 +128,24 @@ def fetch_articles():
     articles.sort(key=lambda x: x["Published"], reverse=True)
     return articles
 
+
 # --- STREAMLIT DASHBOARD ---
 
 st.set_page_config(page_title="Nuclear & Tariff Monitor", layout="wide")
 st.title("🔍 Nuclear & Tariff Executive Order Monitor")
-st.write("Tracking focused keywords in real time from major energy & government news sources (last 24 hours).")
 
-if st.button("Run"):
-    with st.spinner("Collecting data..."):
+st.write("Click **Run** to fetch articles from the past 24 hours. Filters will appear after articles load.")
+
+run_button = st.button("▶️ Run")
+
+if run_button:
+    with st.spinner("Fetching and processing news feeds..."):
         data = fetch_articles()
         df = pd.DataFrame(data)
 
-        if df.empty:
-            st.warning("No matching articles found in the past 24 hours.")
-            st.stop()
-
+    if df.empty:
+        st.warning("No matching articles found.")
+    else:
         st.sidebar.header("Filter Articles")
 
         sources = list(df['Source'].unique())
@@ -183,4 +179,4 @@ if st.button("Run"):
             unsafe_allow_html=True,
         )
 else:
-    st.info("Click 'Run' to collect and filter articles.")
+    st.info("Click the **Run** button to fetch and display data.")
