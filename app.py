@@ -2,12 +2,13 @@ import streamlit as st
 import feedparser
 import pandas as pd
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 import re
+import pytz
 
 # --- CONFIG ---
+
 RSS_FEEDS = {
-    # Google News broad topics
+    # Nuclear & Tariffs (existing)
     "Google News - Nuclear Energy": "https://news.google.com/rss/search?q=nuclear+energy",
     "Google News - Tariffs": "https://news.google.com/rss/search?q=tariffs",
     "Google News - Politics": "https://news.google.com/rss/search?q=politics",
@@ -19,14 +20,10 @@ RSS_FEEDS = {
     "Google News - CNBC": "https://news.google.com/rss/search?q=CNBC",
     "Google News - MarketWatch": "https://news.google.com/rss/search?q=MarketWatch",
     "Google News - Financial Times": "https://news.google.com/rss/search?q=Financial+Times",
-
-    # Government and energy agencies
     "US NRC News": "https://www.nrc.gov/reading-rm/doc-collections/news/rss.xml",
     "DOE Press Office": "https://www.energy.gov/doe-press-office/rss.xml",
     "DOE News": "https://www.energy.gov/articles/rss.xml",
     "EIA News": "https://www.eia.gov/rss/news.xml",
-
-    # Media feeds
     "Reuters Energy": "https://www.reuters.com/business/energy/rss",
     "Reuters Business": "https://www.reuters.com/rssFeed/businessNews",
     "Reuters Politics": "https://www.reuters.com/politics/rss",
@@ -43,8 +40,6 @@ RSS_FEEDS = {
     "Financial Times": "https://www.ft.com/?format=rss",
     "Financial Times Markets": "https://www.ft.com/markets/rss",
     "Financial Times Politics": "https://www.ft.com/politics/rss",
-
-    # Others
     "Washington Post Energy": "https://www.washingtonpost.com/rss/energy-environment/",
     "NPR Energy": "https://www.npr.org/rss/rss.php?id=1017",
     "Bing News - Nuclear Energy": "https://www.bing.com/news/search?q=nuclear+energy&format=rss",
@@ -69,8 +64,11 @@ KEYWORD_GROUPS = {
     "Section 232": ["section 232"],
     "Defense Production Act": ["defense production act"],
     "Nuclear Licensing": ["nuclear licensing"],
-    "Trade Agreement": ["trade agreement"],
+    "Trade Agreement": ["trade agreement"]
 }
+
+# --- TIME ZONE CONFIG ---
+cet = pytz.timezone("CET")
 
 # --- HELPER FUNCTIONS ---
 
@@ -79,13 +77,7 @@ def matches_keyword_group(text, keywords):
     return all(re.search(r'\b{}\b'.format(re.escape(kw.lower())), text) for kw in keywords)
 
 def parse_date(date_str):
-    formats = [
-        '%a, %d %b %Y %H:%M:%S %Z',
-        '%a, %d %b %Y %H:%M:%S %z',
-        '%Y-%m-%dT%H:%M:%S%z',
-        '%Y-%m-%dT%H:%M:%S.%f%z'
-    ]
-    for fmt in formats:
+    for fmt in ['%a, %d %b %Y %H:%M:%S %Z', '%a, %d %b %Y %H:%M:%S %z', '%Y-%m-%dT%H:%M:%S%z', '%Y-%m-%dT%H:%M:%S.%f%z']:
         try:
             return datetime.strptime(date_str, fmt)
         except Exception:
@@ -97,29 +89,33 @@ def parse_date(date_str):
 
 def fetch_articles():
     articles = []
-    now = datetime.now(ZoneInfo("Europe/Paris"))
+    now = datetime.now(cet)
     day_ago = now - timedelta(days=1)
 
     for source, url in RSS_FEEDS.items():
         feed = feedparser.parse(url)
         if not feed.entries:
             continue
+
         for entry in feed.entries:
             title = entry.title
             summary = entry.get("summary", "")
             link = entry.link
-            published = entry.get("published", now.isoformat())
-            published_dt = parse_date(published)
+            published = entry.get("published", None)
+            if not published:
+                continue
 
-            if published_dt.tzinfo:
-                published_dt = published_dt.astimezone(ZoneInfo("Europe/Paris"))
+            published_dt = parse_date(published)
+            if published_dt.tzinfo is None:
+                published_dt = cet.localize(published_dt)
             else:
-                published_dt = published_dt.replace(tzinfo=ZoneInfo("Europe/Paris"))
+                published_dt = published_dt.astimezone(cet)
 
             if published_dt < day_ago:
                 continue
 
             content = (title + " " + summary).lower()
+
             matched_group = None
             for group_name, keywords in KEYWORD_GROUPS.items():
                 if matches_keyword_group(content, keywords):
@@ -140,53 +136,51 @@ def fetch_articles():
     return articles
 
 # --- STREAMLIT DASHBOARD ---
+
 st.set_page_config(page_title="Nuclear & Tariff Monitor", layout="wide")
 st.title("🔍 Nuclear & Tariff Executive Order Monitor")
-st.write("Tracking focused keywords in real time from major energy & government news sources (last 24 hours, CET).")
+st.write("Tracking focused keywords in real time from major energy & government news sources (last 24 hours).")
 
-data = fetch_articles()
-df = pd.DataFrame(data)
+if st.button("Run"):
+    with st.spinner("Collecting data..."):
+        data = fetch_articles()
+        df = pd.DataFrame(data)
 
-if df.empty:
-    st.warning("No matching articles found in the past 24 hours.")
-    st.stop()
+        if df.empty:
+            st.warning("No matching articles found in the past 24 hours.")
+            st.stop()
 
-# Sidebar filters
-st.sidebar.header("Filter Articles")
+        st.sidebar.header("Filter Articles")
 
-# Source filter
-sources = list(df['Source'].unique())
-selected_sources = st.sidebar.multiselect("Select Sources", sources, default=sources)
+        sources = list(df['Source'].unique())
+        selected_sources = st.sidebar.multiselect("Select Sources", sources, default=sources)
 
-# Keyword group filter
-keyword_groups = list(KEYWORD_GROUPS.keys())
-selected_keywords = st.sidebar.multiselect("Select Keyword Groups", keyword_groups, default=keyword_groups)
+        keyword_groups = list(KEYWORD_GROUPS.keys())
+        selected_keywords = st.sidebar.multiselect("Select Keyword Groups", keyword_groups, default=keyword_groups)
 
-# Date filter
-min_date = df['Published'].min().date()
-max_date = df['Published'].max().date()
-selected_dates = st.sidebar.date_input("Select Date Range", [min_date, max_date], min_value=min_date, max_value=max_date)
+        min_date = df['Published'].min().date()
+        max_date = df['Published'].max().date()
+        selected_dates = st.sidebar.date_input("Select Date Range", [min_date, max_date], min_value=min_date, max_value=max_date)
 
-# Apply filters
-filtered_df = df[
-    (df['Source'].isin(selected_sources)) &
-    (df['Keyword Group'].isin(selected_keywords)) &
-    (df['Published'].dt.date >= selected_dates[0]) &
-    (df['Published'].dt.date <= selected_dates[1])
-]
+        filtered_df = df[
+            (df['Source'].isin(selected_sources)) &
+            (df['Keyword Group'].isin(selected_keywords)) &
+            (df['Published'].dt.date >= selected_dates[0]) &
+            (df['Published'].dt.date <= selected_dates[1])
+        ]
 
-# Show counts
-st.subheader("Article Hits by Source")
-st.table(filtered_df['Source'].value_counts())
+        st.subheader("Article Hits by Source")
+        st.table(filtered_df['Source'].value_counts())
 
-# Format for display
-def make_clickable(url):
-    return f'<a href="{url}" target="_blank">Link</a>'
+        def make_clickable(url):
+            return f'<a href="{url}" target="_blank">Link</a>'
 
-filtered_display = filtered_df[['Published', 'Title', 'Source', 'Keyword Group', 'Link']].copy()
-filtered_display['Link'] = filtered_display['Link'].apply(make_clickable)
+        filtered_display = filtered_df[['Published', 'Title', 'Source', 'Keyword Group', 'Link']].copy()
+        filtered_display['Link'] = filtered_display['Link'].apply(make_clickable)
 
-st.markdown(
-    filtered_display.to_html(escape=False, index=False),
-    unsafe_allow_html=True,
-)
+        st.markdown(
+            filtered_display.to_html(escape=False, index=False),
+            unsafe_allow_html=True,
+        )
+else:
+    st.info("Click 'Run' to collect and filter articles.")
